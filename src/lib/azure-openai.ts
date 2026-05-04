@@ -2,10 +2,16 @@ import { AzureOpenAI } from "openai";
 
 let _client: AzureOpenAI | null = null;
 
+// Tolerate users pasting the Foundry "v1" path; AzureOpenAI client wants the bare resource URL.
+function bareEndpoint(): string {
+  const raw = (process.env.AZURE_OPENAI_ENDPOINT || "").trim();
+  return raw.replace(/\/openai\/v1\/?$/, "").replace(/\/+$/, "");
+}
+
 export function azure() {
   if (_client) return _client;
   _client = new AzureOpenAI({
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
+    endpoint: bareEndpoint(),
     apiKey: process.env.AZURE_OPENAI_API_KEY!,
     apiVersion: process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview",
     deployment: process.env.AZURE_OPENAI_DEPLOYMENT!,
@@ -14,6 +20,16 @@ export function azure() {
 }
 
 export const DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o";
+
+// Fetch an image and inline as a base64 data URL — avoids Azure trying to outbound-fetch
+// a URL that may be blocked from its region or rate-limited.
+async function toDataUrl(url: string): Promise<string> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`image fetch failed: ${r.status}`);
+  const ct = r.headers.get("content-type") || "image/jpeg";
+  const buf = Buffer.from(await r.arrayBuffer());
+  return `data:${ct};base64,${buf.toString("base64")}`;
+}
 
 export type GarmentAnalysis = {
   description: string;
@@ -43,6 +59,8 @@ export async function analyzeGarment(
 - complements: 3-6 free-text colors/styles that pair well with this item.
 Output JSON only.`;
 
+  const dataUrl = await toDataUrl(imageUrl);
+
   const r = await client.chat.completions.create({
     model: DEPLOYMENT,
     response_format: { type: "json_object" },
@@ -53,7 +71,7 @@ Output JSON only.`;
         role: "user",
         content: [
           { type: "text", text: userText },
-          { type: "image_url", image_url: { url: imageUrl } },
+          { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
     ],
